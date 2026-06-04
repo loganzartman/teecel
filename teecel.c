@@ -119,12 +119,12 @@ bool parse_delims(const char** src) {
 }
 
 const char* parse_word(const char** src) {
-  LOG("parse word: %s", *src);
-  const char** start = src;
-  const char** end = src;
+  LOG("parse word");
+  const char* start = *src;
+  const char* end = *src;
 
-  while (!isworddelim(peek_char(end))) {
-    take_char(end);
+  while (!isworddelim(peek_char(&end))) {
+    take_char(&end);
   }
 
   size_t length = end - start;
@@ -132,11 +132,12 @@ const char* parse_word(const char** src) {
     return NULL;
   }
 
-  *src = *end;
+  *src = end;
 
   char* word = malloc(length + 1);
-  strncpy(word, *start, length);
+  strncpy(word, start, length);
   word[length] = '\0';
+  LOG("parsed word: %s", word);
   return word;
 }
 
@@ -241,7 +242,6 @@ void print_node_program(const TclNode* program) {
 
   for (size_t i = 0; i < program->data.program.n_commands; ++i) {
     print_node(program->data.program.commands[i]);
-    printf("\n");
   }
 }
 
