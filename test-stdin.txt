@@ -1,2 +1,2 @@
-expr 2 + 2
-set x 42
+expr x + 1
+set x 10

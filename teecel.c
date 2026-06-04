@@ -56,6 +56,12 @@ typedef struct TclNode {
   } data;
 } TclNode;
 
+TclNode* create_node(const TclNode node) {
+  TclNode* node_ptr = malloc(sizeof(TclNode));
+  memcpy(node_ptr, &node, sizeof(TclNode));
+  return node_ptr;
+}
+
 typedef enum TclParseError {
   PARSE_ERROR_GENERIC,
   PARSE_ERROR_EXTRA_INPUT,
@@ -176,27 +182,21 @@ TclParseResult parse_command(const char** src) {
     size_t index = n_args++;
     args = realloc(args, n_args * sizeof(TclNode*));
     
-    TclNode node = {
+    args[index] = create_node((TclNode){
       .type = NODE_TYPE_OBJECT,
       .data.object.type = OBJECT_TYPE_STRING,
       .data.object.data.string.value = arg,
-    };
-    args[index] = malloc(sizeof(TclNode));
-    memcpy(args[index], &node, sizeof(TclNode));
+    });
   }
-
-  TclNode command = {
-    .type = NODE_TYPE_COMMAND,
-    .data.command.routine = routine,
-    .data.command.n_args = n_args,
-    .data.command.args = (const TclNode**) args,
-  };
-  TclNode* command_ptr = malloc(sizeof(TclNode));
-  memcpy(command_ptr, &command, sizeof(TclNode));
 
   return (TclParseResult) {
     .success = true,
-    .result.node = command_ptr,
+    .result.node = create_node((TclNode) {
+      .type = NODE_TYPE_COMMAND,
+      .data.command.routine = routine,
+      .data.command.n_args = n_args,
+      .data.command.args = (const TclNode**) args,
+    }),
   };
 }
 
@@ -228,17 +228,13 @@ TclParseResult parse_program(const char** src) {
     };
   }
 
-  TclNode program = {
-    .type = NODE_TYPE_PROGRAM,
-    .data.program.n_commands = n_commands,
-    .data.program.commands = (const TclNode**)commands,
-  };
-  TclNode* program_ptr = malloc(sizeof(TclNode));
-  memcpy(program_ptr, &program, sizeof(TclNode));
-
   return (TclParseResult) {
     .success = true,
-    .result.node = program_ptr,
+    .result.node = create_node((TclNode) {
+      .type = NODE_TYPE_PROGRAM,
+      .data.program.n_commands = n_commands,
+      .data.program.commands = (const TclNode**)commands,
+    }),
   };
 }
 
@@ -251,10 +247,8 @@ TclParseResult parse(const char* src_) {
 void print_node(const TclNode* node);
 
 void print_node_program(const TclNode* program) {
-  if (program->type != NODE_TYPE_PROGRAM) {
-    LOG("invalid node type");
-    return;
-  }
+  assert(program != NULL);
+  assert(program->type == NODE_TYPE_PROGRAM);
 
   for (size_t i = 0; i < program->data.program.n_commands; ++i) {
     print_node(program->data.program.commands[i]);
@@ -262,10 +256,8 @@ void print_node_program(const TclNode* program) {
 }
 
 void print_node_command(const TclNode* command) {
-  if (command->type != NODE_TYPE_COMMAND) {
-    LOG("invalid node type");
-    return;
-  }
+  assert(command != NULL);
+  assert(command->type == NODE_TYPE_COMMAND);
   
   printf("%s", command->data.command.routine);
   if (command->data.command.n_args > 0) {
@@ -278,10 +270,8 @@ void print_node_command(const TclNode* command) {
 }
 
 void print_node_object(const TclNode* object) {
-  if (object->type != NODE_TYPE_OBJECT) {
-    LOG("invalid node type");
-    return;
-  }
+  assert(object != NULL);
+  assert(object->type == NODE_TYPE_OBJECT);
 
   switch (object->data.object.type) {
     case OBJECT_TYPE_STRING:
@@ -297,6 +287,7 @@ void print_node_object(const TclNode* object) {
 }
 
 void print_node(const TclNode* node) {
+  assert(node != NULL);
   switch (node->type) {
     case NODE_TYPE_PROGRAM:
       print_node_program(node);
@@ -310,6 +301,124 @@ void print_node(const TclNode* node) {
     default:
       LOG("print_node: invalid node type");
       break;
+  }
+}
+
+typedef struct TclName {
+  const char* name;
+  const TclNode* value;
+} TclName;
+
+typedef struct TclEvalContext {
+  TclName* names;
+  size_t n_names;
+} TclEvalContext;
+
+const TclNode* eval_node(const TclNode* node, TclEvalContext* context);
+
+const TclNode* eval_node_program(const TclNode* program, TclEvalContext* context) {
+  assert(program != NULL);
+  assert(context != NULL);
+  assert(program->type == NODE_TYPE_PROGRAM);
+  
+  const TclNode* result = NULL;
+  for (size_t i = 0; i < program->data.program.n_commands; ++i) {
+    result = eval_node(program->data.program.commands[i], context);
+  }
+  return result;
+}
+
+const TclNode* eval_builtin_expr(const TclNode* command, TclEvalContext* context) {
+  assert(command != NULL);
+  assert(context != NULL);
+  assert(command->type == NODE_TYPE_COMMAND);
+
+  return NULL;
+}
+
+const TclNode* eval_builtin_set(const TclNode* command, TclEvalContext* context) {
+  assert(command != NULL);
+  assert(context != NULL);
+  assert(command->type == NODE_TYPE_COMMAND);
+
+  if (command->data.command.n_args != 2) {
+    LOG("Invalid number of arguments for set: %zu", command->data.command.n_args);
+    return create_node((TclNode) {
+      .type = NODE_TYPE_OBJECT,
+      .data.object.type = OBJECT_TYPE_STRING,
+      .data.object.data.string.value = "",
+    });
+  }
+
+  const char* name = command->data.command.args[0]->data.object.data.string.value;
+  const TclNode* value = command->data.command.args[1];
+
+  for (size_t i = 0; i < context->n_names; ++i) {
+    if (strcmp(context->names[i].name, name) == 0) {
+      context->names[i].value = value;
+      return value;
+    }
+  }
+
+  context->names = realloc(context->names, (context->n_names + 1) * sizeof(TclName));
+  context->names[context->n_names] = (TclName) {
+    .name = name,
+    .value = value,
+  };
+  context->n_names++;
+  return value;
+}
+
+const TclNode* eval_node_command(const TclNode* command, TclEvalContext* context) {
+  assert(command != NULL);
+  assert(context != NULL);
+  assert(command->type == NODE_TYPE_COMMAND);
+  
+  for (size_t i = 0; i < context->n_names; ++i) {
+    if (strcmp(context->names[i].name, command->data.command.routine) == 0) {
+      LOG("Unsupported: call variable %s", command->data.command.routine);
+      return create_node((TclNode) {
+        .type = NODE_TYPE_OBJECT,
+        .data.object.type = OBJECT_TYPE_STRING,
+        .data.object.data.string.value = "",
+      });
+    }
+  }
+
+  if (strcmp(command->data.command.routine, "expr") == 0) {
+    return eval_builtin_expr(command, context);
+  }
+  if (strcmp(command->data.command.routine, "set") == 0) {
+    return eval_builtin_set(command, context);
+  }
+
+  LOG("Unsupported: command %s", command->data.command.routine);
+  return create_node((TclNode) {
+    .type = NODE_TYPE_OBJECT,
+    .data.object.type = OBJECT_TYPE_STRING,
+    .data.object.data.string.value = "",
+  });
+}
+
+const TclNode* eval_node_object(const TclNode* object, TclEvalContext* context) {
+  assert(object != NULL);
+  assert(context != NULL);
+  assert(object->type == NODE_TYPE_OBJECT);
+  
+  return object;
+}
+
+const TclNode* eval_node(const TclNode* node, TclEvalContext* context) {
+  switch (node->type) {
+    case NODE_TYPE_PROGRAM:
+      return eval_node_program(node, context);
+    case NODE_TYPE_COMMAND:
+      return eval_node_command(node, context);
+    case NODE_TYPE_OBJECT:
+      return eval_node_object(node, context);
+    default:
+      LOG("eval_node_with_context: invalid node type");
+      return NULL;
   }
 }
 
@@ -339,15 +448,25 @@ int main(int argc, char const *argv[]) {
   
   const char* input = read_stdin();
 
-  TclParseResult result = parse(input);
-  if (!result.success) {
-    printf("%s\n", format_parse_error(result.error.code));
+  TclParseResult parse_result = parse(input);
+  if (!parse_result.success) {
+    printf("%s\n", format_parse_error(parse_result.error.code));
     return -1;
   }
 
-  LOG("done parse");
+  LOG("parsed:");
 
-  print_node(result.result.node);
+  print_node(parse_result.result.node);
+
+  TclEvalContext context = {
+    .names = NULL,
+    .n_names = 0,
+  };
+  const TclNode* eval_result = eval_node(parse_result.result.node, &context);
+
+  LOG("evaluated:");
+
+  print_node(eval_result);
 
   return 0;
 }
