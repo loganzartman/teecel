@@ -17,8 +17,13 @@
 typedef enum TclNodeType {
   NODE_TYPE_PROGRAM,
   NODE_TYPE_COMMAND,
-  NODE_TYPE_STRING,
+  NODE_TYPE_OBJECT,
 } TclNodeType;
+
+typedef enum TclObjectType {
+  OBJECT_TYPE_STRING,
+  OBJECT_TYPE_NUMBER,
+} TclObjectType;
 
 typedef struct TclNode {
   const enum TclNodeType type;
@@ -36,8 +41,18 @@ typedef struct TclNode {
     } command;
 
     struct {
-      const char* value;
-    } string;
+      const TclObjectType type;
+      
+      union {
+        struct {
+          const char* value;
+        } string;
+
+        struct {
+          const double value; 
+        } number;
+      } data;
+    } object;
   } data;
 } TclNode;
 
@@ -162,8 +177,9 @@ TclParseResult parse_command(const char** src) {
     args = realloc(args, n_args * sizeof(TclNode*));
     
     TclNode node = {
-      .type = NODE_TYPE_STRING,
-      .data.string.value = arg,
+      .type = NODE_TYPE_OBJECT,
+      .data.object.type = OBJECT_TYPE_STRING,
+      .data.object.data.string.value = arg,
     };
     args[index] = malloc(sizeof(TclNode));
     memcpy(args[index], &node, sizeof(TclNode));
@@ -261,13 +277,23 @@ void print_node_command(const TclNode* command) {
   printf(";\n");
 }
 
-void print_node_string(const TclNode* string) {
-  if (string->type != NODE_TYPE_STRING) {
+void print_node_object(const TclNode* object) {
+  if (object->type != NODE_TYPE_OBJECT) {
     LOG("invalid node type");
     return;
   }
 
-  printf("%s", string->data.string.value);
+  switch (object->data.object.type) {
+    case OBJECT_TYPE_STRING:
+      printf("%s", object->data.object.data.string.value);
+      break;
+    case OBJECT_TYPE_NUMBER:
+      printf("%f", object->data.object.data.number.value);
+      break;
+    default:
+      LOG("print_node_object: invalid object type");
+      break;
+  }
 }
 
 void print_node(const TclNode* node) {
@@ -278,8 +304,8 @@ void print_node(const TclNode* node) {
     case NODE_TYPE_COMMAND:
       print_node_command(node);
       break;
-    case NODE_TYPE_STRING:
-      print_node_string(node);
+    case NODE_TYPE_OBJECT:
+      print_node_object(node);
       break;
     default:
       LOG("print_node: invalid node type");
