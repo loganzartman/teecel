@@ -18,7 +18,7 @@
 typedef enum TclNodeType {
   NODE_TYPE_COMMAND_LIST,
   NODE_TYPE_COMMAND,
-  NODE_TYPE_STRING,
+  NODE_TYPE_LITERAL,
 } TclNodeType;
 
 typedef struct TclNode {
@@ -38,7 +38,7 @@ typedef struct TclNode {
 
     struct {
       const char* value;
-    } string;
+    } literal;
   } data;
 } TclNode;
 
@@ -169,8 +169,8 @@ TclParseResult parse_command(const char** src) {
     args = realloc(args, n_args * sizeof(TclNode*));
     
     args[index] = create_node((TclNode) {
-      .type = NODE_TYPE_STRING,
-      .data.string.value = arg,
+      .type = NODE_TYPE_LITERAL,
+      .data.literal.value = arg,
     });
   }
 
@@ -254,11 +254,11 @@ void print_node_command(const TclNode* command) {
   printf(";\n");
 }
 
-void print_node_string(const TclNode* string) {
-  assert(string != NULL);
-  assert(string->type == NODE_TYPE_STRING);
+void print_node_literal(const TclNode* literal) {
+  assert(literal != NULL);
+  assert(literal->type == NODE_TYPE_LITERAL);
 
-  printf("%s", string->data.string.value);
+  printf("%s", literal->data.literal.value);
 }
 
 void print_node(const TclNode* node) {
@@ -270,8 +270,8 @@ void print_node(const TclNode* node) {
     case NODE_TYPE_COMMAND:
       print_node_command(node);
       break;
-    case NODE_TYPE_STRING:
-      print_node_string(node);
+    case NODE_TYPE_LITERAL:
+      print_node_literal(node);
       break;
     default:
       LOG("print_node: invalid node type");
@@ -360,11 +360,11 @@ TclVal eval_builtin_set(const TclNode* command, TclEvalContext* context) {
     return create_val("");
   }
 
-  const char* name = command->data.command.args[0]->data.string.value;
+  const char* name = command->data.command.args[0]->data.literal.value;
   const TclNode* value_node = command->data.command.args[1];
-  assert(value_node->type == NODE_TYPE_STRING);
+  assert(value_node->type == NODE_TYPE_LITERAL);
 
-  TclVal value = create_val(value_node->data.string.value);
+  TclVal value = create_val(value_node->data.literal.value);
 
   for (size_t i = 0; i < context->n_names; ++i) {
     if (strcmp(context->names[i].name, name) == 0) {
@@ -398,12 +398,12 @@ TclVal eval_node_command(const TclNode* command, TclEvalContext* context) {
   return create_val("");
 }
 
-TclVal eval_node_string(const TclNode* string, TclEvalContext* context) {
-  assert(string != NULL);
+TclVal eval_node_literal(const TclNode* literal, TclEvalContext* context) {
+  assert(literal != NULL);
   assert(context != NULL);
-  assert(string->type == NODE_TYPE_STRING);
+  assert(literal->type == NODE_TYPE_LITERAL);
   
-  return create_val(string->data.string.value);
+  return create_val(literal->data.literal.value);
 }
 
 TclVal eval_node(const TclNode* node, TclEvalContext* context) {
@@ -412,8 +412,8 @@ TclVal eval_node(const TclNode* node, TclEvalContext* context) {
       return eval_node_command_list(node, context);
     case NODE_TYPE_COMMAND:
       return eval_node_command(node, context);
-    case NODE_TYPE_STRING:
-      return eval_node_string(node, context);
+    case NODE_TYPE_LITERAL:
+      return eval_node_literal(node, context);
     default:
       LOG("eval_node_with_context: invalid node type");
       return create_val("");
