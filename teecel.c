@@ -15,10 +15,30 @@
 #define LOG(x, ...)
 #endif
 
+typedef enum TclTokenType {
+  TOKEN_TYPE_STRING,
+  TOKEN_TYPE_VAR,
+} TclTokenType;
+
+typedef struct TclToken {
+  const TclTokenType type;
+
+  union {
+    struct {
+      const char* value;
+    } string;
+
+    struct {
+      const char* name;
+    } var;
+  };
+} TclToken;
+
 typedef enum TclNodeType {
   NODE_TYPE_COMMAND_LIST,
   NODE_TYPE_COMMAND,
   NODE_TYPE_LITERAL,
+  NODE_TYPE_TEMPLATE,
 } TclNodeType;
 
 typedef struct TclNode {
@@ -39,6 +59,11 @@ typedef struct TclNode {
     struct {
       const char* value;
     } literal;
+
+    struct {
+      const size_t n_tokens;
+      const struct TclToken** tokens;
+    } template;
   } data;
 } TclNode;
 
