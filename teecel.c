@@ -34,6 +34,12 @@ typedef struct TclToken {
   };
 } TclToken;
 
+TclToken* create_token(const TclToken token) {
+  TclToken* token_ptr = malloc(sizeof(TclToken));
+  memcpy(token_ptr, &token, sizeof(TclToken));
+  return token_ptr;
+}
+
 typedef enum TclNodeType {
   NODE_TYPE_COMMAND_LIST,
   NODE_TYPE_COMMAND,
@@ -62,7 +68,7 @@ typedef struct TclNode {
 
     struct {
       const size_t n_tokens;
-      const struct TclToken** tokens;
+      const struct TclToken* tokens;
     } template;
   } data;
 } TclNode;
@@ -153,8 +159,8 @@ bool parse_delims(const char** src) {
   return found;
 }
 
-TclParseResult parse_word(const char** src) {
-  LOG("parse word");
+TclParseResult parse_word_literal(const char** src) {
+  LOG("parse literal");
   const char* start = *src;
   const char* end = *src;
 
@@ -183,6 +189,51 @@ TclParseResult parse_word(const char** src) {
       .type = NODE_TYPE_LITERAL,
       .data.literal.value = word,
     }),
+  };
+}
+
+TclParseResult parse_word_variable(const char** src) {
+  LOG("parse variable");
+  if (peek_char(src) != '$') {
+    return (TclParseResult) {
+      .success = false,
+      .error.code = PARSE_ERROR_GENERIC,
+    };
+  }
+  take_char(src);
+
+  TclParseResult literal = parse_word_literal(src);
+  if (!literal.success) {
+    return literal;
+  }
+
+  return (TclParseResult) {
+    .success = true,
+    .result.node = create_node((TclNode) {
+      .type = NODE_TYPE_TEMPLATE,
+      .data.template.n_tokens = 1,
+      .data.template.tokens = create_token((TclToken) {
+        .type = TOKEN_TYPE_VAR,
+        .var.name = literal.result.node->data.literal.value,
+      }),
+    })
+  };
+}
+
+TclParseResult parse_word(const char** src) {
+  TclParseResult word = parse_word_variable(src);
+  if (word.success) {
+    return word;
+  }
+
+  word = parse_word_literal(src);
+  if (word.success) {
+    return word;
+  }
+
+  return (TclParseResult) {
+    .success = false,
+    .error.code = PARSE_ERROR_EXPECTED_WORD,
   };
 }
 
@@ -300,8 +351,30 @@ void print_node_literal(const TclNode* literal) {
   printf("%s", literal->data.literal.value);
 }
 
+void print_token(const TclToken* token) {
+  switch (token->type) {
+    case TOKEN_TYPE_STRING:
+      printf("%s", token->string.value);
+      break;
+    case TOKEN_TYPE_VAR:
+      printf("$%s", token->var.name);
+      break;
+    default:
+      LOG("print_token: invalid node type");
+      break;
+  }
+}
+
+void print_node_template(const TclNode* template) {
+  assert(template != NULL);
+  assert(template->type == NODE_TYPE_TEMPLATE);
+  
+  for (size_t i = 0; i < template->data.template.n_tokens; ++i) {
+    print_token(&template->data.template.tokens[i]);
+  }
+}
+
 void print_node(const TclNode* node) {
-  assert(node != NULL);
   switch (node->type) {
     case NODE_TYPE_COMMAND_LIST:
       print_node_command_list(node);
@@ -312,6 +385,9 @@ void print_node(const TclNode* node) {
     case NODE_TYPE_LITERAL:
       print_node_literal(node);
       break;
+    case NODE_TYPE_TEMPLATE:
+      print_node_template(node);
+      break; 
     default:
       LOG("print_node: invalid node type");
       break;

@@ -1,2 +1,2 @@
-expr x + 1
-set x 10
+set x 2;
+expr 1 + $x;
