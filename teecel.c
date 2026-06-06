@@ -443,7 +443,71 @@ typedef struct TclEvalContext {
   size_t n_names;
 } TclEvalContext;
 
+TclVal* context_lookup_name(const TclEvalContext* context, const char* name) {
+  assert(context != NULL);
+  assert(name != NULL);
+
+  for (size_t i = 0; i < context->n_names; ++i) {
+    if (strcmp(context->names[i].name, name) == 0) {
+      return &context->names[i].value;
+    }
+  }
+
+  return NULL;
+}
+
 TclVal eval_node(const TclNode* node, TclEvalContext* context);
+
+const char* eval_token_as_string(const TclToken* token, TclEvalContext* context) {
+  assert(token != NULL);
+
+  switch (token->type) {
+    case TOKEN_TYPE_STRING:
+      return token->string.value;
+    case TOKEN_TYPE_VAR: {
+      TclVal* value = context_lookup_name(context, token->var.name);
+      if (value == NULL) {
+        LOG("undefined name %s", token->var.name);
+        return "";
+      }
+
+      return value->string;
+    }
+    default:
+      LOG("Unsupported token type %d", token->type);
+      return "";
+  }
+}
+
+const char* eval_template_as_string(const TclNode* node, TclEvalContext* context) {
+  assert(node != NULL);
+  assert(node->type == NODE_TYPE_TEMPLATE);
+
+  size_t result_len = 0;
+  char* result = NULL;
+
+  for (size_t i = 0; i < node->data.template.n_tokens; ++i) {
+    const char* str = eval_token_as_string(&node->data.template.tokens[i], context);
+    size_t str_len = strlen(str);
+    result = realloc(result, result_len + str_len);
+    strcat(result, str);
+  }
+  
+  return result;
+}
+
+const char* eval_node_as_string(const TclNode* node, TclEvalContext* context) {
+  switch (node->type) {
+    case NODE_TYPE_LITERAL:
+      return node->data.literal.value;
+    case NODE_TYPE_TEMPLATE: 
+      return eval_template_as_string(node, context);
+    case NODE_TYPE_COMMAND:
+    case NODE_TYPE_COMMAND_LIST:
+      LOG("Unexpected node type: %d", node->type);
+      return "";
+  }
+}
 
 TclVal eval_node_command_list(const TclNode* command_list, TclEvalContext* context) {
   assert(command_list != NULL);
@@ -462,7 +526,7 @@ TclVal eval_builtin_expr(const TclNode* command, TclEvalContext* context) {
   assert(context != NULL);
   assert(command->type == NODE_TYPE_COMMAND);
 
-  return create_val("");
+  return create_val(eval_node_as_string(command->data.command.args[0], context));
 }
 
 TclVal eval_builtin_set(const TclNode* command, TclEvalContext* context) {
@@ -497,19 +561,6 @@ TclVal eval_builtin_set(const TclNode* command, TclEvalContext* context) {
   return value;
 }
 
-const char* eval_node_as_string(const TclNode* node, TclEvalContext* context) {
-  switch (node->type) {
-    case NODE_TYPE_LITERAL:
-      return node->data.literal.value;
-    case NODE_TYPE_TEMPLATE:
-      LOG("not implemented");
-      return "";
-    case NODE_TYPE_COMMAND:
-    case NODE_TYPE_COMMAND_LIST:
-      LOG("Unexpected node type: %d", node->type);
-      return "";
-  }
-}
 
 TclVal eval_node_command(const TclNode* command, TclEvalContext* context) {
   assert(command != NULL);

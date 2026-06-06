@@ -1,2 +1,2 @@
 set x 2;
-expr 1 + $x;
+expr $x + 1;
