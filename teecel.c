@@ -51,7 +51,7 @@ typedef struct TclNode {
     } command_list;
 
     struct {
-      const char* name;
+      const struct TclNode* name;
       const size_t n_args;
       const struct TclNode** args;
     } command;
@@ -76,6 +76,7 @@ TclNode* create_node(const TclNode node) {
 typedef enum TclParseError {
   PARSE_ERROR_GENERIC,
   PARSE_ERROR_EXTRA_INPUT,
+  PARSE_ERROR_EXPECTED_WORD,
 } TclParseError;
 
 const char* format_parse_error(const TclParseError error) {
@@ -84,6 +85,8 @@ const char* format_parse_error(const TclParseError error) {
       return "Generic parse error";
     case PARSE_ERROR_EXTRA_INPUT:
       return "Parse error: extra input";
+    case PARSE_ERROR_EXPECTED_WORD:
+      return "Parse error: expected word";
     default:
       return "Unknown parse error";
   }
@@ -150,7 +153,7 @@ bool parse_delims(const char** src) {
   return found;
 }
 
-const char* parse_word(const char** src) {
+TclParseResult parse_word(const char** src) {
   LOG("parse word");
   const char* start = *src;
   const char* end = *src;
@@ -161,7 +164,10 @@ const char* parse_word(const char** src) {
 
   size_t length = end - start;
   if (length == 0) {
-    return NULL;
+    return (TclParseResult) {
+      .success = false,
+      .error.code = PARSE_ERROR_EXPECTED_WORD,
+    };
   }
 
   *src = end;
@@ -170,40 +176,48 @@ const char* parse_word(const char** src) {
   strncpy(word, start, length);
   word[length] = '\0';
   LOG("parsed word: %s", word);
-  return word;
+
+  return (TclParseResult) {
+    .success = true,
+    .result.node = create_node((TclNode) {
+      .type = NODE_TYPE_LITERAL,
+      .data.literal.value = word,
+    }),
+  };
 }
 
 TclParseResult parse_command(const char** src) {
   LOG("parse command");
   parse_ws(src);
-  const char* const name = parse_word(src);
-  if (name == NULL) {
-    return (TclParseResult) {
-      .success = false,
-      .error.code = PARSE_ERROR_GENERIC,
-    };
+  TclParseResult name = parse_word(src);
+  if (!name.success) {
+    return name;
   }
-  LOG("parsed name: %s", name);
 
   size_t n_args = 0;
   TclNode** args = NULL;
-  const char* arg = NULL;
-  while ((arg = (parse_ws(src) ? parse_word(src) : NULL)) != NULL) {
-    LOG("parsed arg: %s", arg);
+  TclParseResult arg;
+  while (true) {
+    if (!parse_ws(src)) {
+      break;
+    }
+
+    arg = parse_word(src);
+    if (!arg.success) {
+      break;
+    }
+
+    LOG("parsed arg");
     size_t index = n_args++;
     args = realloc(args, n_args * sizeof(TclNode*));
-    
-    args[index] = create_node((TclNode) {
-      .type = NODE_TYPE_LITERAL,
-      .data.literal.value = arg,
-    });
+    args[index] = arg.result.node;
   }
 
   return (TclParseResult) {
     .success = true,
     .result.node = create_node((TclNode) {
       .type = NODE_TYPE_COMMAND,
-      .data.command.name = name,
+      .data.command.name = name.result.node,
       .data.command.n_args = n_args,
       .data.command.args = (const TclNode**) args,
     }),
@@ -269,7 +283,7 @@ void print_node_command(const TclNode* command) {
   assert(command != NULL);
   assert(command->type == NODE_TYPE_COMMAND);
   
-  printf("%s", command->data.command.name);
+  print_node(command->data.command.name);
   if (command->data.command.n_args > 0) {
     for (size_t i = 0; i < command->data.command.n_args; ++i) {
       printf(" ");
@@ -332,7 +346,7 @@ void print_val(TclVal val) {
       printf("%s", val.string);
       break;
     case REP_TYPE_INT:
-      printf("%ld", val.rep.v_int);
+      printf("%lld", val.rep.v_int);
       break;
     case REP_TYPE_DOUBLE:
       printf("%f", val.rep.v_double);
@@ -407,19 +421,34 @@ TclVal eval_builtin_set(const TclNode* command, TclEvalContext* context) {
   return value;
 }
 
+const char* eval_node_as_string(const TclNode* node, TclEvalContext* context) {
+  switch (node->type) {
+    case NODE_TYPE_LITERAL:
+      return node->data.literal.value;
+    case NODE_TYPE_TEMPLATE:
+      LOG("not implemented");
+      return "";
+    case NODE_TYPE_COMMAND:
+    case NODE_TYPE_COMMAND_LIST:
+      LOG("Unexpected node type: %d", node->type);
+      return "";
+  }
+}
+
 TclVal eval_node_command(const TclNode* command, TclEvalContext* context) {
   assert(command != NULL);
   assert(context != NULL);
   assert(command->type == NODE_TYPE_COMMAND);
 
-  if (strcmp(command->data.command.name, "expr") == 0) {
+  const char* name = eval_node_as_string(command->data.command.name, context);
+  if (strcmp(name, "expr") == 0) {
     return eval_builtin_expr(command, context);
   }
-  if (strcmp(command->data.command.name, "set") == 0) {
+  if (strcmp(name, "set") == 0) {
     return eval_builtin_set(command, context);
   }
 
-  LOG("Unsupported: command %s", command->data.command.name);
+  LOG("Unsupported: command %s", name);
   return create_val("");
 }
 
