@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <ctype.h>
 #include <assert.h>
 
@@ -140,9 +141,8 @@ char peek_char(const char** src) {
 }
 
 bool parse_ws(const char** src) {
-  LOG("parse ws");
   bool found = false;
-  while (isws(**src)) {
+  while (isws(peek_char(src))) {
     found = true;
     take_char(src);
   }
@@ -150,7 +150,6 @@ bool parse_ws(const char** src) {
 }
 
 bool parse_delims(const char** src) {
-  LOG("parse delims: %s", *src);
   bool found = false;
   while (isworddelim(peek_char(src))) {
     found = true;
@@ -160,11 +159,10 @@ bool parse_delims(const char** src) {
 }
 
 TclParseResult parse_word_literal(const char** src) {
-  LOG("parse literal");
   const char* start = *src;
   const char* end = *src;
 
-  while (!isworddelim(peek_char(&end))) {
+  while (!isworddelim(peek_char(&end)) && peek_char(&end) != 0) {
     take_char(&end);
   }
 
@@ -181,7 +179,6 @@ TclParseResult parse_word_literal(const char** src) {
   char* word = malloc(length + 1);
   strncpy(word, start, length);
   word[length] = '\0';
-  LOG("parsed word: %s", word);
 
   return (TclParseResult) {
     .success = true,
@@ -193,7 +190,6 @@ TclParseResult parse_word_literal(const char** src) {
 }
 
 TclParseResult parse_word_variable(const char** src) {
-  LOG("parse variable");
   if (peek_char(src) != '$') {
     return (TclParseResult) {
       .success = false,
@@ -237,8 +233,29 @@ TclParseResult parse_word(const char** src) {
   };
 }
 
+void parse_arg_list(const char** src, size_t* n_args, TclNode*** args) {
+  assert(n_args != NULL);
+  assert(args != NULL);
+
+  *n_args = 0;
+  TclParseResult arg;
+  while (true) {
+    arg = parse_word(src);
+    if (!arg.success) {
+      break;
+    }
+
+    size_t index = (*n_args)++;
+    (*args) = realloc((*args), (*n_args) * sizeof(TclNode*));
+    (*args)[index] = arg.result.node;
+
+    if (!parse_ws(src)) {
+      break;
+    }
+  }
+}
+
 TclParseResult parse_command(const char** src) {
-  LOG("parse command");
   parse_ws(src);
   TclParseResult name = parse_word(src);
   if (!name.success) {
@@ -247,21 +264,8 @@ TclParseResult parse_command(const char** src) {
 
   size_t n_args = 0;
   TclNode** args = NULL;
-  TclParseResult arg;
-  while (true) {
-    if (!parse_ws(src)) {
-      break;
-    }
-
-    arg = parse_word(src);
-    if (!arg.success) {
-      break;
-    }
-
-    LOG("parsed arg");
-    size_t index = n_args++;
-    args = realloc(args, n_args * sizeof(TclNode*));
-    args[index] = arg.result.node;
+  if (parse_ws(src)) {
+    parse_arg_list(src, &n_args, &args);
   }
 
   return (TclParseResult) {
@@ -276,8 +280,6 @@ TclParseResult parse_command(const char** src) {
 }
 
 TclParseResult parse_command_list(const char** src) {
-  LOG("parse command list");
-
   size_t n_commands = 0;
   TclNode** commands = NULL;
   while (peek_char(src) != 0) {
@@ -293,7 +295,6 @@ TclParseResult parse_command_list(const char** src) {
     if (!parse_delims(src)) {
       break;
     }
-    LOG("src: %s", *src);
   }
 
   if (peek_char(src) != 0) {
@@ -314,7 +315,6 @@ TclParseResult parse_command_list(const char** src) {
 }
 
 TclParseResult parse(const char* src_) {
-  LOG("parse");
   const char** src = &src_;
   return parse_command_list(src);
 }
@@ -422,7 +422,7 @@ void print_val(TclVal val) {
       printf("%s", val.string);
       break;
     case REP_TYPE_INT:
-      printf("%lld", val.rep.v_int);
+      printf("%" PRId64 "d", val.rep.v_int);
       break;
     case REP_TYPE_DOUBLE:
       printf("%f", val.rep.v_double);
@@ -488,8 +488,8 @@ const char* eval_template_as_string(const TclNode* node, TclEvalContext* context
 
   for (size_t i = 0; i < node->data.template.n_tokens; ++i) {
     const char* str = eval_token_as_string(&node->data.template.tokens[i], context);
-    size_t str_len = strlen(str);
-    result = realloc(result, result_len + str_len);
+    result_len += strlen(str);
+    result = realloc(result, result_len + 1);
     strcat(result, str);
   }
   
@@ -500,7 +500,7 @@ const char* eval_node_as_string(const TclNode* node, TclEvalContext* context) {
   switch (node->type) {
     case NODE_TYPE_LITERAL:
       return node->data.literal.value;
-    case NODE_TYPE_TEMPLATE: 
+    case NODE_TYPE_TEMPLATE:
       return eval_template_as_string(node, context);
     case NODE_TYPE_COMMAND:
     case NODE_TYPE_COMMAND_LIST:
@@ -526,7 +526,31 @@ TclVal eval_builtin_expr(const TclNode* command, TclEvalContext* context) {
   assert(context != NULL);
   assert(command->type == NODE_TYPE_COMMAND);
 
-  return create_val(eval_node_as_string(command->data.command.args[0], context));
+  // join args with space
+  size_t src_len = 0;
+  char* src = NULL;
+  for (size_t i = 0; i < command->data.command.n_args; ++i) {
+    const char* str = eval_node_as_string(command->data.command.args[i], context);
+    src_len += strlen(str);
+    if (i > 0) {
+      src_len += 1;
+    }
+    src = realloc(src, src_len + 1);
+    if (i > 0) {
+      strcat(src, " ");
+    }
+    strcat(src, str);
+  }
+
+  // parse
+  size_t n_args;
+  TclNode** args;
+  parse_arg_list((const char**)&src, &n_args, &args);
+  if (n_args == 0) {
+    return create_val("");
+  }
+
+  return create_val(eval_node_as_string(args[0], context));
 }
 
 TclVal eval_builtin_set(const TclNode* command, TclEvalContext* context) {
