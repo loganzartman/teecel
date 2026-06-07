@@ -402,6 +402,7 @@ typedef enum TclRepType {
 
 typedef struct TclVal {
   const char* string;
+  size_t len;
   TclRepType rep_type;
   union {
     int64_t v_int;
@@ -412,7 +413,9 @@ typedef struct TclVal {
 TclVal create_val(const char* string) {
   return (TclVal) {
     .string = string,
+    .len = strlen(string),
     .rep_type = REP_TYPE_NONE,
+    .rep.v_int = 0,
   };
 }
 
@@ -422,7 +425,7 @@ void print_val(TclVal val) {
       printf("%s", val.string);
       break;
     case REP_TYPE_INT:
-      printf("%" PRId64 "d", val.rep.v_int);
+      printf("%" PRId64, val.rep.v_int);
       break;
     case REP_TYPE_DOUBLE:
       printf("%f", val.rep.v_double);
@@ -521,6 +524,149 @@ TclVal eval_node_command_list(const TclNode* command_list, TclEvalContext* conte
   return result;
 }
 
+typedef enum ExprOperator {
+  OP_NONE,
+  OP_LPAREN,
+  OP_RPAREN,
+  OP_ADD,
+  OP_SUB,
+  OP_MUL,
+  OP_DIV,
+} ExprOperator;
+
+ExprOperator expr_parse_op(const char* str) {
+  if (!strcmp(str, "(")) {
+    return OP_LPAREN;
+  }
+  if (!strcmp(str, ")")) {
+    return OP_RPAREN;
+  }
+  if (!strcmp(str, "+")) {
+    return OP_ADD;
+  }
+  if (!strcmp(str, "-")) {
+    return OP_SUB;
+  }
+  if (!strcmp(str, "*")) {
+    return OP_MUL;
+  }
+  if (!strcmp(str, "/")) {
+    return OP_DIV;
+  }
+  return OP_NONE;
+}
+
+int expr_op_precedence(ExprOperator op) {
+  switch (op) {
+    case OP_NONE:
+    case OP_LPAREN:
+    case OP_RPAREN:
+      return 0;
+    case OP_ADD:
+    case OP_SUB:
+      return 1;
+    case OP_MUL:
+    case OP_DIV:
+      return 2;
+    default:
+      LOG("unknown operator: %d", op);
+      return 0;
+  }
+}
+
+bool shimmer_double(TclVal* val) {
+  if (val->rep_type == REP_TYPE_DOUBLE) {
+    return true;
+  }
+
+  char* endptr = NULL;
+  double result = strtod(val->string, &endptr);
+  if (endptr != val->string + val->len) {
+    return false;
+  }
+
+  val->rep_type = REP_TYPE_DOUBLE;
+  val->rep.v_double = result;
+  return true;
+}
+
+bool shimmer_int(TclVal* val) {
+  if (val->rep_type == REP_TYPE_INT) {
+    return true;
+  }
+
+  char* endptr = NULL;
+  int64_t result = strtoll(val->string, &endptr, 10);
+  if (endptr != val->string + val->len) {
+    return false;
+  }
+
+  val->rep_type = REP_TYPE_INT;
+  val->rep.v_int = result;
+  return true;
+}
+
+bool shimmer_number_both(TclVal* a, TclVal* b) {
+  bool a_is_int = shimmer_int(a);
+  bool b_is_int = shimmer_int(b);
+
+  if (a_is_int && b_is_int) {
+    return true;
+  } 
+
+  bool a_is_double = shimmer_double(a);
+  bool b_is_double = shimmer_double(b);
+
+  return a_is_double && b_is_double;
+}
+
+#define apply_binop_number(OPERANDS, N_OPERANDS, OP) \
+  { \
+    assert(*(N_OPERANDS) >= 2); \
+    TclVal* a = &(OPERANDS)[*(N_OPERANDS) - 2]; \
+    TclVal* b = &(OPERANDS)[*(N_OPERANDS) - 1]; \
+    bool is_number = shimmer_number_both(a, b); \
+    if (!is_number) { \
+      LOG("Addition of non-number values"); \
+      return; \
+    } \
+    switch (a->rep_type) { \
+      case REP_TYPE_DOUBLE: \
+        a->rep.v_double = a->rep.v_double OP b->rep.v_double; \
+        break; \
+      case REP_TYPE_INT: \
+        a->rep.v_int = a->rep.v_int OP b->rep.v_int; \
+        break; \
+      default: \
+        LOG("Addition on unsupported types"); \
+    } \
+    --(*(N_OPERANDS)); \
+  }
+
+void expr_apply_op(TclVal* operands, size_t* n_operands, ExprOperator op) {
+  assert(n_operands != NULL);
+
+  switch (op) {
+    case OP_ADD:
+      apply_binop_number(operands, n_operands, +);
+      break;
+    case OP_SUB:
+      apply_binop_number(operands, n_operands, -);
+      break;
+    case OP_MUL:
+      apply_binop_number(operands, n_operands, *);
+      break;
+    case OP_DIV:
+      apply_binop_number(operands, n_operands, /);
+      break;
+    case OP_NONE:
+    case OP_LPAREN:
+    case OP_RPAREN:
+      LOG("applying invalid op %d", op);
+      break;
+  }
+}
+
 TclVal eval_builtin_expr(const TclNode* command, TclEvalContext* context) {
   assert(command != NULL);
   assert(context != NULL);
@@ -536,7 +682,9 @@ TclVal eval_builtin_expr(const TclNode* command, TclEvalContext* context) {
       src_len += 1;
     }
     src = realloc(src, src_len + 1);
-    if (i > 0) {
+    if (i == 0) {
+      src[0] = '\0';
+    } else {
       strcat(src, " ");
     }
     strcat(src, str);
@@ -550,7 +698,77 @@ TclVal eval_builtin_expr(const TclNode* command, TclEvalContext* context) {
     return create_val("");
   }
 
-  return create_val(eval_node_as_string(args[0], context));
+  // shunting yard
+  size_t n_operands = 0;
+  TclVal* operands = NULL;
+  size_t n_operators = 0;
+  ExprOperator* operators = NULL;
+
+  for (size_t i = 0; i < n_args; ++i) {
+    TclVal val = create_val(eval_node_as_string(args[i], context));
+    ExprOperator op = expr_parse_op(val.string);
+
+    if (op == OP_NONE) {
+      // push to operand stack
+      operands = realloc(operands, ++n_operands * sizeof(*operands));
+      operands[n_operands - 1] = val;
+    } else if (op == OP_LPAREN) {
+      // push to op stack
+      operators = realloc(operators, ++n_operators * sizeof(*operators));
+      operators[n_operators - 1] = op;
+    } else if (op == OP_RPAREN) {
+      while (true) {
+        if (n_operators == 0) {
+          LOG("expr: mismatched parenthesis");
+          break;
+        }
+
+        ExprOperator top = operators[n_operators - 1];
+        if (top == OP_LPAREN) {
+          --n_operators;
+          break;
+        }
+
+        expr_apply_op(operands, &n_operands, top);
+        --n_operators;
+      }
+    } else {
+      int precedence = expr_op_precedence(op);
+
+      // apply higher-precedence ops
+      while (true) {
+        if (n_operators == 0) {
+          break;
+        }
+
+        ExprOperator top = operators[n_operators - 1];
+        if (top == OP_LPAREN) {
+          break;
+        }
+        if (expr_op_precedence(top) < precedence) {
+          break;
+        }
+
+        expr_apply_op(operands, &n_operands, top);
+        --n_operators;
+      }
+
+      // push to op stack
+      operators = realloc(operators, ++n_operators * sizeof(*operators));
+      operators[n_operators - 1] = op;
+    }
+  }
+
+  while (n_operators > 0) {
+    ExprOperator top = operators[--n_operators];
+    expr_apply_op(operands, &n_operands, top);
+  }
+
+  TclVal result = operands[0];
+
+  free(operands);
+  free(operators);
+  return result;
 }
 
 TclVal eval_builtin_set(const TclNode* command, TclEvalContext* context) {
