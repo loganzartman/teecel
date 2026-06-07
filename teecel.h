@@ -831,6 +831,9 @@ TclVal eval_node_literal(const TclNode* literal, TclEvalContext* context) {
 }
 
 TclVal eval_node(const TclNode* node, TclEvalContext* context) {
+  assert(node != NULL);
+  assert(context != NULL);
+  
   switch (node->type) {
     case NODE_TYPE_COMMAND_LIST:
       return eval_node_command_list(node, context);
@@ -856,6 +859,40 @@ const char* read_stdin() {
       buffer = realloc(buffer, size);
     }
     buffer[i++] = c;
+  }
+  buffer[i] = 0;
+
+  return buffer;
+}
+
+const char* read_line() {
+  size_t size = 64;
+  char* buffer = malloc(size);
+
+  size_t i = 0;
+  int c;
+  while ((c = getchar()) != EOF) {
+    bool is_eol = false;
+    if (c == '\r') {
+      is_eol = true;
+      int next = getchar();
+      if (next != '\n') {
+        ungetc(next, stdin);
+      }
+      c = '\n';
+    } else if (c == '\n') {
+      is_eol = true;
+    }
+
+    if (i >= size) {
+      size *= 1.5;
+      buffer = realloc(buffer, size);
+    }
+    buffer[i++] = c;
+
+    if (is_eol) {
+      break;
+    }
   }
   buffer[i] = 0;
 
